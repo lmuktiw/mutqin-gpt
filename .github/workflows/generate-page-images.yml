@@ -33,7 +33,8 @@ jobs:
       - name: Pasang pustaka
         run: |
           sudo apt-get update && sudo apt-get install -y libcairo2
-          pip install numpy scipy pillow cairosvg      - name: Uji algoritma deteksi (halaman sintetis)
+          pip install numpy scipy pillow cairosvg
+      - name: Uji algoritma deteksi (halaman sintetis)
         run: python tools/test_page_boxes.py
       - name: Unduh gambar + deteksi kotak
         env:
