@@ -1,0 +1,43 @@
+name: Generate Assets
+
+# Jalankan SEKALI (manual) sebelum build pertama: mengunduh teks 604 halaman + audio 3,5 detik tiap halaman,
+# memvalidasinya, lalu menyimpannya ke repo (app/src/main/assets/pages dan assets/audio).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Unduh teks & audio
+        run: python tools/generate_assets.py
+
+      - name: Validasi ulang
+        run: python tools/generate_assets.py --validate-only
+
+      - name: Simpan ke repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/assets/pages app/src/main/assets/audio
+          if git diff --cached --quiet; then
+            echo "Tidak ada perubahan aset."
+          else
+            git commit -m "Tambah aset offline: teks 604 halaman dan audio 3,5 detik"
+            git push
+          fi

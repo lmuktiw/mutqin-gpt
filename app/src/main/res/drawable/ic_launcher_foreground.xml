@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Buku terbuka (emas) -->
+    <path
+        android:fillColor="#FFFBBF24"
+        android:pathData="M54,40 C46,36 36,36 30,38 L30,70 C36,68 46,68 54,72 C62,68 72,68 78,70 L78,38 C72,36 62,36 54,40 Z" />
+    <!-- Punggung buku -->
+    <path
+        android:strokeColor="#FF064E3B"
+        android:strokeWidth="2"
+        android:pathData="M54,40 L54,72" />
+</vector>

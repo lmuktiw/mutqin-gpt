@@ -1,0 +1,184 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Tes logika murni (antrean, rentang, SRS, pemetaan ayat). Berjalan paralel; tidak menghalangi build APK.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Terima lisensi Android SDK
+        run: yes | "$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)" --licenses > /dev/null || true
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Unit test
+        run: |
+          set -o pipefail
+          gradle :app:testDebugUnitTest --stacktrace --console=plain 2>&1 | tee gradle-test.log
+      - name: Ringkasan galat (tampil di halaman run -> Summary)
+        if: failure()
+        run: |
+          {
+            echo "### Galat pada job test"
+            echo '```'
+            grep -E "^e: |FAILURE:|What went wrong|Execution failed|Could not |FAILED" -A4 gradle-test.log | head -100 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Unggah log dan laporan tes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: |
+            gradle-test.log
+            app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: ignore
+
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # untuk membuat GitHub Release saat tag v* didorong
+    env:
+      HAS_KEYSTORE: ${{ secrets.MUTQIN_KEYSTORE_BASE64 != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pastikan aset offline lengkap
+        run: |
+          pages=$(ls app/src/main/assets/pages 2>/dev/null | wc -l)
+          audio=$(ls app/src/main/assets/audio 2>/dev/null | wc -l)
+          echo "Teks: $pages/604 halaman, audio: $audio/604 klip"
+          if [ "$pages" -ne 604 ] || [ "$audio" -ne 604 ]; then
+            echo "::error::Aset offline belum lengkap. Jalankan dulu workflow 'Generate Assets' (tab Actions), lalu jalankan ulang build ini."
+            exit 1
+          fi
+
+      - name: Periksa gambar halaman (opsional)
+        run: |
+          imgs=$(ls app/src/main/assets/pages_img 2>/dev/null | wc -l)
+          echo "Gambar halaman: $imgs/604"
+          if [ "$imgs" -ne 604 ]; then
+            echo "::warning::Gambar halaman belum lengkap; aplikasi memakai tampilan teks sebagai cadangan. Jalankan workflow 'Generate Page Images'."
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Terima lisensi Android SDK
+        run: yes | "$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)" --licenses > /dev/null || true
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build debug APK
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --stacktrace --console=plain 2>&1 | tee gradle-build.log
+
+      - name: Ringkasan galat (tampil di halaman run -> Summary)
+        if: failure()
+        run: |
+          {
+            echo "### Galat pada job build"
+            echo '```'
+            grep -E "^e: |FAILURE:|What went wrong|Execution failed|Could not |Keystore" -A4 gradle-build.log | head -100 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Unggah log build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: gradle-build.log
+          if-no-files-found: ignore
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutqin-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+
+      # ---- Rilis bertanda tangan (opsional; butuh 4 GitHub Secrets, lihat README) ----
+      - name: Decode keystore
+        if: env.HAS_KEYSTORE == 'true'
+        run: echo "${{ secrets.MUTQIN_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/mutqin.jks"
+
+      - name: Build signed release APK
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          MUTQIN_KEYSTORE_PATH: ${{ runner.temp }}/mutqin.jks
+          MUTQIN_KEYSTORE_PASSWORD: ${{ secrets.MUTQIN_KEYSTORE_PASSWORD }}
+          MUTQIN_KEY_ALIAS: ${{ secrets.MUTQIN_KEY_ALIAS }}
+          MUTQIN_KEY_PASSWORD: ${{ secrets.MUTQIN_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --stacktrace
+
+      # Tanpa secrets: tetap bangun APK rilis (R8 + penyusutan) yang ditandatangani keystore tetap proyek.
+      # APK ini jauh lebih mulus daripada APK debug dan dipakai untuk uji performa.
+      - name: Build optimized release APK (tanda tangan proyek)
+        if: env.HAS_KEYSTORE != 'true'
+        run: gradle :app:assembleRelease --stacktrace
+
+      # Menampilkan sidik jari (SHA-1 / SHA-256) kunci penanda tangan APK rilis di halaman Summary run ini.
+      # Langkah ini tidak pernah menggagalkan build.
+      - name: Sidik jari tanda tangan APK rilis
+        env:
+          KS_PASS: ${{ secrets.MUTQIN_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.MUTQIN_KEY_ALIAS }}
+        run: |
+          set +e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER="$(find "$SDK/build-tools" -maxdepth 2 -name apksigner 2>/dev/null | sort -V | tail -1)"
+          APK="$(ls app/build/outputs/apk/release/*.apk 2>/dev/null | head -1)"
+          {
+            echo '### Sidik jari tanda tangan APK rilis'
+            echo "APK: ${APK:-tidak ditemukan}"
+            echo "apksigner: ${APKSIGNER:-tidak ditemukan}"
+            echo '```'
+            if [ -n "$APKSIGNER" ] && [ -n "$APK" ]; then
+              "$APKSIGNER" verify --verbose --print-certs "$APK" 2>&1 | grep -v "^WARNING" | head -40
+            fi
+            echo '```'
+            if [ -f "$RUNNER_TEMP/mutqin.jks" ]; then
+              echo '**Dari keystore pribadi (keytool):**'
+              echo '```'
+              keytool -list -v -keystore "$RUNNER_TEMP/mutqin.jks" -alias "$KS_ALIAS" -storepass:env KS_PASS 2>&1 \
+                | grep -E "Alias name|Owner|Valid from|SHA1|SHA256|keytool error"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutqin-release-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      # Saat tag versi (mis. v1.1.0) didorong dan keystore pribadi terpasang: APK bertanda tangan dilampirkan ke GitHub Releases
+      - name: Siapkan berkas rilis
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_KEYSTORE == 'true'
+        run: cp app/build/outputs/apk/release/app-release.apk "mutqin-${GITHUB_REF_NAME}.apk"
+
+      - name: Publikasikan ke GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_KEYSTORE == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mutqin-*.apk
+          generate_release_notes: true

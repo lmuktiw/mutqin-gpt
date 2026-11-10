@@ -1,0 +1,60 @@
+name: Generate Page Images
+
+# Jalankan SEKALI (manual) setelah "Generate Assets": mengunduh gambar 604 halaman mushaf dari sumber yang Anda tentukan,
+# mendeteksi kotak tiap kata/nomor ayat, lalu menyimpannya ke repo (assets/pages_img dan assets/page_boxes).
+on:
+  workflow_dispatch:
+    inputs:
+      svg_base:
+        description: "Disarankan: pola quran-svg tanpa ekstensi, mis. https://cdn.quran.ws/svg/pages/v1.1.1/hafs-kfqc/{page:03d} (kosong = pakai image_url)"
+        required: false
+        default: "https://cdn.quran.ws/svg/pages/v1.1.1/hafs-kfqc/{page:03d}"
+      image_url:
+        description: "Pola URL gambar per halaman, mis. https://host/path/page{page:03d}.png (kosong = bawaan skrip)"
+        required: false
+        default: ""
+      width:
+        description: "Lebar gambar yang dibundel (px)"
+        required: false
+        default: "1260"
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Pasang pustaka
+        run: |
+          sudo apt-get update && sudo apt-get install -y libcairo2
+          pip install numpy scipy pillow cairosvg      - name: Uji algoritma deteksi (halaman sintetis)
+        run: python tools/test_page_boxes.py
+      - name: Unduh gambar + deteksi kotak
+        env:
+          MUTQIN_PAGE_IMAGE_URL: ${{ inputs.image_url }}
+          MUTQIN_SVG_BASE: ${{ inputs.svg_base }}
+        run: |
+          if [ -z "$MUTQIN_PAGE_IMAGE_URL" ]; then unset MUTQIN_PAGE_IMAGE_URL; fi
+          if [ -z "$MUTQIN_SVG_BASE" ]; then unset MUTQIN_SVG_BASE; fi
+          python tools/generate_page_images.py --force --width "${{ inputs.width }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: page-images-report
+          path: tools/page_images_report.json
+          if-no-files-found: ignore
+      - name: Simpan ke repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/assets/pages_img app/src/main/assets/page_boxes tools/page_images_report.json
+          if git diff --cached --quiet; then echo "Tidak ada perubahan."; else
+            git commit -m "Tambah gambar halaman mushaf dan kotak kata"
+            git push
+          fi
